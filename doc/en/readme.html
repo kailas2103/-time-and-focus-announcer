@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Time &amp; Focus Announcer</title>
+<style>
+	:root {
+		--accent: #2a5db0;
+		--accent-dark: #1d4280;
+		--text: #1f2430;
+		--muted: #5a6472;
+		--border: #dfe3ea;
+		--bg-soft: #f6f8fb;
+	}
+	body {
+		font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+		color: var(--text);
+		line-height: 1.6;
+		max-width: 780px;
+		margin: 0 auto;
+		padding: 2.5em 1.5em 4em;
+	}
+	header {
+		border-bottom: 3px solid var(--accent);
+		padding-bottom: 1.2em;
+		margin-bottom: 1.8em;
+	}
+	h1 {
+		font-size: 2em;
+		margin: 0 0 0.2em;
+		color: var(--accent-dark);
+	}
+	.tagline {
+		color: var(--muted);
+		font-size: 1.05em;
+		margin: 0;
+	}
+	.meta {
+		margin-top: 1em;
+		font-size: 0.92em;
+		color: var(--muted);
+	}
+	.meta span {
+		display: inline-block;
+		margin-right: 1.5em;
+	}
+	.meta strong {
+		color: var(--text);
+	}
+	h2 {
+		font-size: 1.35em;
+		color: var(--accent-dark);
+		border-bottom: 1px solid var(--border);
+		padding-bottom: 0.3em;
+		margin-top: 2em;
+	}
+	h3 {
+		font-size: 1.1em;
+		color: var(--text);
+		margin-top: 1.4em;
+	}
+	p { margin: 0.8em 0; }
+	ul, ol { padding-left: 1.4em; }
+	li { margin: 0.4em 0; }
+	kbd {
+		background: var(--bg-soft);
+		border: 1px solid var(--border);
+		border-bottom-width: 2px;
+		border-radius: 4px;
+		padding: 0.15em 0.5em;
+		font-family: Consolas, "Courier New", monospace;
+		font-size: 0.9em;
+		color: var(--accent-dark);
+		white-space: nowrap;
+	}
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		margin: 1em 0 1.5em;
+		font-size: 0.95em;
+	}
+	th, td {
+		text-align: left;
+		padding: 0.6em 0.8em;
+		border-bottom: 1px solid var(--border);
+		vertical-align: top;
+	}
+	th {
+		background: var(--bg-soft);
+		color: var(--accent-dark);
+		font-weight: 600;
+	}
+	.feature-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.6em 1.5em;
+		margin: 1em 0 1.5em;
+	}
+	.feature-grid div {
+		background: var(--bg-soft);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 0.8em 1em;
+	}
+	.feature-grid strong {
+		display: block;
+		color: var(--accent-dark);
+		margin-bottom: 0.2em;
+	}
+	footer {
+		margin-top: 2.5em;
+		padding-top: 1.2em;
+		border-top: 1px solid var(--border);
+		color: var(--muted);
+		font-size: 0.9em;
+	}
+	@media (max-width: 520px) {
+		.feature-grid { grid-template-columns: 1fr; }
+	}
+</style>
+</head>
+<body>
+
+<header>
+	<h1>Time &amp; Focus Announcer</h1>
+	<p class="tagline">An all-in-one accessible audio timepiece and productivity suite for NVDA.</p>
+	<p class="meta">
+		<span><strong>Author:</strong> Kailas Eknath Bhoye</span>
+		<span><strong>Version:</strong> 1.0</span>
+		<span><strong>License:</strong> MIT</span>
+	</p>
+</header>
+
+<section>
+	<h2>Overview</h2>
+	<p>
+		Time &amp; Focus Announcer brings together an accessible spoken clock, a precision
+		countdown timer, a full Pomodoro focus engine, and a library of premium audio
+		earcons - all designed from the ground up for NVDA users. Every setting is reachable
+		with a clear, direct accessible label, and every feature works the same way whether
+		you're checking the time, running a focus session, or staying on top of your
+		posture and hydration through the day.
+	</p>
+</section>
+
+<section>
+	<h2>Highlights</h2>
+	<div class="feature-grid">
+		<div>
+			<strong>Spoken Clock</strong>
+			Announces the time on demand, with seconds-level precision and full date on repeated presses.
+		</div>
+		<div>
+			<strong>Precision Countdown Timer</strong>
+			Set a timer in hours, minutes, and seconds - supports durations up to 999 hours.
+		</div>
+		<div>
+			<strong>Pomodoro Focus Engine</strong>
+			A complete focus/break session cycle with configurable durations and spoken transitions.
+		</div>
+		<div>
+			<strong>Ambient Clock Pulse</strong>
+			An optional, unobtrusive tick - continuous or at a 3-second interval - for a steady sense of time passing.
+		</div>
+		<div>
+			<strong>Scheduled Announcements</strong>
+			Automatic periodic time announcements, limited to the hours you actually want them.
+		</div>
+		<div>
+			<strong>12 Premium Audio Earcons</strong>
+			A curated set of chime soundpacks to choose from, cycled with a single shortcut.
+		</div>
+		<div>
+			<strong>Session &amp; Uptime Tracking</strong>
+			Reports both the current NVDA session runtime and overall Windows uptime.
+		</div>
+		<div>
+			<strong>Health Reminders</strong>
+			Gentle, optional hourly nudges to stay hydrated and mind your posture.
+		</div>
+	</div>
+</section>
+
+<section>
+	<h2>Keyboard Shortcuts</h2>
+	<table>
+		<tr><th>Shortcut</th><th>Action</th></tr>
+		<tr>
+			<td><kbd>NVDA+Shift+T</kbd></td>
+			<td>Announce the current time. Press twice quickly for exact seconds, three times for the full date.</td>
+		</tr>
+		<tr>
+			<td><kbd>NVDA+Control+Shift+T</kbd></td>
+			<td>Set up a precision countdown timer, or check the time remaining on an active one.</td>
+		</tr>
+		<tr>
+			<td><kbd>NVDA+Control+Shift+P</kbd></td>
+			<td>Start or stop a Pomodoro focus session.</td>
+		</tr>
+		<tr>
+			<td><kbd>NVDA+Control+Shift+U</kbd></td>
+			<td>Report the current NVDA session runtime and Windows uptime.</td>
+		</tr>
+		<tr>
+			<td><kbd>NVDA+Control+Shift+M</kbd></td>
+			<td>Mute or unmute automated periodic announcements.</td>
+		</tr>
+		<tr>
+			<td><kbd>NVDA+Control+Shift+K</kbd></td>
+			<td>Turn the ambient mechanical clock pulse on or off.</td>
+		</tr>
+		<tr>
+			<td><kbd>NVDA+Control+Shift+B</kbd></td>
+			<td>Quick-cycle through the available audio earcon soundpacks.</td>
+		</tr>
+		<tr>
+			<td><kbd>NVDA+Control+Shift+H</kbd></td>
+			<td>Turn hourly health companion reminders on or off.</td>
+		</tr>
+		<tr>
+			<td><kbd>NVDA+Control+Shift+A</kbd></td>
+			<td>Open the Time &amp; Focus Announcer settings dialog.</td>
+		</tr>
+	</table>
+</section>
+
+<section>
+	<h2>Settings</h2>
+	<p>
+		The settings dialog (<kbd>NVDA+Control+Shift+A</kbd>) is organised into three tabs -
+		<strong>General</strong>, <strong>Schedule</strong>, and <strong>Advanced</strong> -
+		each preceded by a clear description of what that section controls, so every option
+		is easy to find and understand with a screen reader.
+	</p>
+</section>
+
+<footer>
+	<p>Time &amp; Focus Announcer is released under the MIT License. See LICENSE.txt for the full text.</p>
+</footer>
+
+</body>
+</html>
