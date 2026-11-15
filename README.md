@@ -14,8 +14,8 @@ Time & Focus Announcer brings together an accessible spoken clock, a precision c
 ## Features
 
 - **Spoken Clock:** Announces the time on demand, with seconds-level precision and the full date on repeated presses.
-- **Precision Countdown Timer:** Set a timer in hours, minutes, and seconds. Supports durations up to 999 hours.
-- **Pomodoro Focus Engine:** A complete focus and break session cycle with configurable durations and spoken transitions.
+- **Precision Countdown Timer:** Set a timer in hours, minutes, and seconds. Supports durations of up to 24 hours (23:59:59).
+- **Pomodoro Focus Engine:** A complete focus and break session cycle with configurable durations (up to 999 hours each for focus and break) and spoken transitions.
 - **Ambient Clock Pulse:** An optional, unobtrusive tick, either continuous or at a 3-second interval, for a steady sense of time passing.
 - **Scheduled Announcements:** Automatic periodic time announcements, limited to the hours you actually want them.
 - **12 Premium Audio Earcons:** A curated set of chime soundpacks, cycled with a single shortcut.
