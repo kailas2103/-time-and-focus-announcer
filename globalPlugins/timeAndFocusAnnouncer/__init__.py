@@ -1,4 +1,4 @@
-# Time & Focus Announcer for NVDA (v1.0 Clean Open Source)
+# Time & Focus Announcer for NVDA (v1.1 Clean Open Source)
 # Author: Kailas Eknath Bhoye
 # Copyright (c) 2026 Kailas Eknath Bhoye
 # Licensed under MIT License
@@ -21,6 +21,11 @@ from logHandler import log
 
 SOUND_DIR = os.path.join(os.path.dirname(__file__), "sounds")
 TICK_PATH = os.path.join(SOUND_DIR, "tick.wav")
+# Tick sounds the user can switch between: (settings key, spoken name, file name)
+TICK_SOUNDS = [
+    ("standard", "Standard tick", "tick.wav"),
+    ("loud", "Loud tick", "tick_loud.wav"),
+]
 DEFAULT_BELL = os.path.join(SOUND_DIR, "crystal.wav")
 BELL_DELAY_MS = 600
 
@@ -43,16 +48,19 @@ SOUNDPACKS = [
     ("marimba", "12. Soft Acoustic Marimba", "marimba.wav"),
 ]
 
-PULSE_INTERVALS = [1, 5, 10, 60]
-PULSE_LABELS = ["Every 1 second (Continuous clock)", "Every 5 seconds", "Every 10 seconds", "Every 60 seconds (Minute pulse)"]
+PULSE_INTERVALS = [1, 3, 5, 10, 60]
+PULSE_LABELS = ["Every 1 second (Continuous clock)", "Every 3 seconds", "Every 5 seconds", "Every 10 seconds", "Every 60 seconds (Minute pulse)"]
 
 CONFIG_SECTION = "timeAndFocusAnnouncer"
 config.conf.spec[CONFIG_SECTION] = {
     "intervalMinutes": "integer(default=0)",
+    "invertSpinKeys": "boolean(default=false)",
+    "announceWhenLocked": "boolean(default=false)",
     "format24Hour": "boolean(default=false)",
     "enableGreetings": "boolean(default=true)",
     "includeDateInPeriodic": "boolean(default=false)",
     "includeBatteryStatus": "boolean(default=false)",
+    "batteryOnManualPress": "boolean(default=false)",
     "chimeOnlyMode": "boolean(default=false)",
     "suppressOnFullscreen": "boolean(default=true)",
     "soundPack": "string(default='crystal')",
@@ -64,20 +72,22 @@ config.conf.spec[CONFIG_SECTION] = {
     "endHour": "integer(default=22,min=0,max=23)",
     "endMinute": "integer(default=0,min=0,max=59)",
     "focusHours": "integer(default=0,min=0,max=999)",
-    "focusMinutes": "integer(default=25,min=1,max=59)",
+    "focusMinutes": "integer(default=25,min=0,max=59)",
+    "focusSeconds": "integer(default=0,min=0,max=59)",
     "breakHours": "integer(default=0,min=0,max=999)",
-    "breakMinutes": "integer(default=5,min=1,max=59)",
+    "breakMinutes": "integer(default=5,min=0,max=59)",
+    "breakSeconds": "integer(default=0,min=0,max=59)",
     "muteAnnouncements": "boolean(default=false)",
     "healthReminders": "boolean(default=true)",
     "healthReminderType": "integer(default=0)",
     "clockPulseEnabled": "boolean(default=false)",
     "clockPulseIntervalSecs": "integer(default=1)",
+    "tickSound": "string(default=standard)",
     "timerContinuousTick": "boolean(default=true)",
 }
 
 INTERVAL_CHOICES = [0, 15, 30, 45, 60]
 INTERVAL_LABELS = ["Off", "Every 15 minutes", "Every 30 minutes", "Every 45 minutes", "Every 1 hour"]
-
 _timerRemainingSecs = 0
 _countdownActive = False
 _countdownTimerObj = None
@@ -117,7 +127,155 @@ def getResolvedBellPath(override_custom=None):
                 return p
     return DEFAULT_BELL
 
+def _lockedByWtsSession():
+    """Windows' own record of this session: is it locked?
+
+    This also covers the lock screen picture (the screen with the clock that shows
+    before the sign-in box), which runs on the normal desktop.
+    """
+    try:
+        import os
+        wts = ctypes.WinDLL("wtsapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        wts.WTSQuerySessionInformationW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int,
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_uint32)
+        ]
+        wts.WTSQuerySessionInformationW.restype = ctypes.c_int
+        wts.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+        kernel32.ProcessIdToSessionId.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
+        mySession = ctypes.c_uint32(0)
+        if not kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(mySession)):
+            return False
+        buf = ctypes.c_void_p()
+        size = ctypes.c_uint32(0)
+        # WTS_CURRENT_SERVER_HANDLE = NULL, WTS_CURRENT_SESSION = 0xFFFFFFFF, WTSSessionInfoEx = 25
+        if not wts.WTSQuerySessionInformationW(None, 0xFFFFFFFF, 25, ctypes.byref(buf), ctypes.byref(size)):
+            return False
+        try:
+            if not buf.value or size.value < 20:
+                return False
+            # WTSINFOEX: Level (4 bytes) and 4 bytes of padding, because the data that follows is
+            # 8-byte aligned. Then SessionId (offset 8), SessionState (offset 12), SessionFlags (offset 16).
+            sessionId = ctypes.c_uint32.from_address(buf.value + 8).value
+            if sessionId != mySession.value:
+                return False  # the layout is not what we expect, so do not trust it
+            flags = ctypes.c_uint32.from_address(buf.value + 16).value
+            return flags == 0  # WTS_SESSIONSTATE_LOCK
+        finally:
+            wts.WTSFreeMemory(buf)
+    except Exception:
+        return False
+
+def _lockedByNvda():
+    """NVDA's own lock tracking."""
+    try:
+        from winAPI.sessionTracking import isWindowsLocked as _nvdaIsWindowsLocked
+        return bool(_nvdaIsWindowsLocked())
+    except Exception:
+        return False
+
+def _lockedBySecureDesktop():
+    """The sign-in screen runs on a secure desktop that a normal program cannot open."""
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.OpenInputDesktop.restype = ctypes.c_void_p
+        user32.OpenInputDesktop.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        user32.CloseDesktop.argtypes = [ctypes.c_void_p]
+        user32.GetUserObjectInformationW.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)
+        ]
+        hDesk = user32.OpenInputDesktop(0, 0, 0x0001)  # DESKTOP_READOBJECTS
+        if not hDesk:
+            # Access denied means the secure desktop (sign-in screen) is active.
+            return ctypes.get_last_error() == 5
+        try:
+            buf = ctypes.create_unicode_buffer(256)
+            needed = ctypes.c_uint32(0)
+            ok = user32.GetUserObjectInformationW(hDesk, 2, buf, ctypes.sizeof(buf), ctypes.byref(needed))  # 2 = UOI_NAME
+        finally:
+            user32.CloseDesktop(hDesk)
+        return bool(ok) and buf.value.lower() != "default"
+    except Exception:
+        return False
+
+def _lockedByForegroundWindow():
+    """The lock screen is a full-screen window of LockApp.exe (or LogonUI.exe)."""
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_uint32)
+        ]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        pid = ctypes.c_uint32(0)
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        hProc = kernel32.OpenProcess(0x1000, 0, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not hProc:
+            return False
+        try:
+            buf = ctypes.create_unicode_buffer(520)
+            size = ctypes.c_uint32(520)
+            if not kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(size)):
+                return False
+            exeName = buf.value.replace("/", "\\").split("\\")[-1].lower()
+        finally:
+            kernel32.CloseHandle(hProc)
+        return exeName in ("lockapp.exe", "logonui.exe")
+    except Exception:
+        return False
+
+_lockCache = {"time": 0.0, "value": False}
+
+def isWindowsLocked():
+    """True while Windows is locked: the lock screen picture or the sign-in screen.
+
+    Several independent checks are used, and any one of them is enough, so this works
+    on laptops with the lid open and on desktop PCs, including PCs without a password.
+    The answer is remembered for half a second because it is asked often.
+    """
+    import time
+    now = time.monotonic()
+    if now - _lockCache["time"] < 0.5:
+        return _lockCache["value"]
+    reasons = [
+        name for name, check in (
+            ("session", _lockedByWtsSession),
+            ("nvda", _lockedByNvda),
+            ("secureDesktop", _lockedBySecureDesktop),
+            ("foreground", _lockedByForegroundWindow),
+        ) if check()
+    ]
+    locked = bool(reasons)
+    _lockCache["time"] = now
+    _lockCache["value"] = locked
+    if locked:
+        try:
+            from logHandler import log
+            log.debug("Time and Focus Announcer: Windows is locked (" + ", ".join(reasons) + ")")
+        except Exception:
+            pass
+    return locked
+
+def isSilentForLock():
+    """True when automatic sounds and speech should stay quiet because Windows is locked."""
+    try:
+        if _cfg()["announceWhenLocked"]:
+            return False
+    except Exception:
+        pass
+    return isWindowsLocked()
+
 def playActiveBell(override_path=None):
+    if isSilentForLock():
+        return
     path = override_path or getResolvedBellPath()
     try:
         if os.path.exists(path):
@@ -125,12 +283,40 @@ def playActiveBell(override_path=None):
     except Exception:
         pass
 
-def playTick():
+def getTickPath():
     try:
-        if os.path.exists(TICK_PATH):
-            nvwave.playWaveFile(TICK_PATH, asynchronous=True)
+        chosen = _cfg().get("tickSound", "standard")
+    except Exception:
+        chosen = "standard"
+    for key, _name, fileName in TICK_SOUNDS:
+        if key == chosen:
+            path = os.path.join(SOUND_DIR, fileName)
+            if os.path.exists(path):
+                return path
+    return TICK_PATH
+
+def playTick():
+    if isSilentForLock():
+        return
+    try:
+        path = getTickPath()
+        if os.path.exists(path):
+            nvwave.playWaveFile(path, asynchronous=True)
     except Exception:
         pass
+
+def _timerBlocksClockPulse():
+    """True while a countdown timer with continuous ticking is running."""
+    return bool(_countdownActive and _cfg().get("timerContinuousTick", True))
+
+def _timerFinalCountdownActive():
+    """True during the last 3 seconds of a countdown timer, when the timer plays its own ticks."""
+    return bool(_countdownActive and 1 <= _timerRemainingSecs <= 3)
+
+CLOCK_BLOCKED_MESSAGE = (
+    "Sorry, the ambient clock cannot be turned on while a countdown timer with continuous ticking is running. "
+    "Please let the timer finish or stop it first, and then turn the ambient clock on. Thank you."
+)
 
 def syncClockPulse():
     global _clockPulseTimerObj
@@ -138,32 +324,50 @@ def syncClockPulse():
         _clockPulseTimerObj = wx.Timer()
         _clockPulseTimerObj.Bind(wx.EVT_TIMER, _onClockPulseTick)
 
-    if _cfg()["clockPulseEnabled"]:
+    if _cfg()["clockPulseEnabled"] and not _timerBlocksClockPulse():
         ms = max(1000, _cfg().get("clockPulseIntervalSecs", 1) * 1000)
         _clockPulseTimerObj.Start(ms)
     else:
         _clockPulseTimerObj.Stop()
 
 def _onClockPulseTick(event):
-    if not _cfg()["clockPulseEnabled"]:
+    if not _cfg()["clockPulseEnabled"] or _timerBlocksClockPulse() or _timerFinalCountdownActive():
         return
     if _cfg()["suppressOnFullscreen"] and isForegroundFullscreen():
         return
     playTick()
 
-def getBatterySummary():
+def getBatterySummary(mode="critical", explain_critical=False):
+    """Return the battery sentence fragment.
+
+    mode "critical": only when the battery is critical (20% or lower and not
+        charging). A normal battery state returns nothing. Used for automatic
+        (periodic) announcements.
+    mode "full": the current battery state, or the critical warning when critical.
+        Used when the user presses the time shortcut and has asked for it.
+    mode "test": always says something, for the Test button in settings.
+    """
     try:
         sps = SYSTEM_POWER_STATUS()
         if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(sps)):
             percent = int(sps.BatteryLifePercent)
-            if percent <= 100:
-                is_plugged = (sps.ACLineStatus == 1)
-                state = "plugged in" if is_plugged else "on battery"
-                warning = ", battery critical warning" if (percent <= 20 and not is_plugged) else ""
-                return f", Battery at {percent}% {state}{warning}"
+            no_battery = (percent > 100) or bool(sps.BatteryFlag & 128)
+            if no_battery:
+                return ", No battery detected on this computer" if mode == "test" else ""
+            is_plugged = (sps.ACLineStatus == 1)
+            is_critical = (percent <= 20 and not is_plugged)
+            if is_critical:
+                return f", Warning: battery is critical at {percent}% and not charging"
+            if mode == "critical":
+                return ""
+            state = "plugged in" if is_plugged else "on battery"
+            out = f", Battery at {percent}% {state}"
+            if mode == "test" and explain_critical:
+                out += ". The battery warning is on, and it will be announced when the battery is at 20 percent or lower and not charging"
+            return out
     except Exception:
         pass
-    return ""
+    return ", Battery status is not available" if mode == "test" else ""
 
 def isForegroundFullscreen():
     try:
@@ -197,13 +401,14 @@ def getUptimeReport():
     except Exception:
         return session_str
 
-def buildTimeSentence(now=None, override_24=None, override_greetings=None, override_inc_date=None, override_battery=None):
+def buildTimeSentence(now=None, override_24=None, override_greetings=None, override_inc_date=None, override_battery=None, override_battery_manual=None, battery_test=False, is_periodic=False):
     now = now or datetime.datetime.now()
     cfg = _cfg()
     is24 = override_24 if override_24 is not None else cfg["format24Hour"]
     use_greetings = override_greetings if override_greetings is not None else cfg["enableGreetings"]
     inc_date = override_inc_date if override_inc_date is not None else cfg["includeDateInPeriodic"]
     inc_battery = override_battery if override_battery is not None else cfg["includeBatteryStatus"]
+    inc_battery_manual = override_battery_manual if override_battery_manual is not None else cfg["batteryOnManualPress"]
 
     h24 = now.hour
     m = now.minute
@@ -230,8 +435,14 @@ def buildTimeSentence(now=None, override_24=None, override_greetings=None, overr
     out = f"{greeting}{time_str}".strip()
     if inc_date:
         out += f", {now.strftime('%A, %B %d')}"
-    if inc_battery:
-        out += getBatterySummary()
+    if battery_test:
+        if inc_battery or inc_battery_manual:
+            out += getBatterySummary("test", explain_critical=inc_battery)
+    elif is_periodic:
+        if inc_battery:
+            out += getBatterySummary("critical")
+    elif inc_battery_manual:
+        out += getBatterySummary("full")
     return out
 
 def isWithinSchedule(now=None):
@@ -243,8 +454,10 @@ def isWithinSchedule(now=None):
     cur = now.hour * 60 + now.minute
     return (start <= cur <= end) if (start <= end) else (cur >= start or cur <= end)
 
-def announceTime(override_bell=None, override_24=None, override_greetings=None, override_inc_date=None, override_battery=None, override_chime_only=None, is_periodic=False):
+def announceTime(override_bell=None, override_24=None, override_greetings=None, override_inc_date=None, override_battery=None, override_chime_only=None, is_periodic=False, is_test=False, override_battery_manual=None):
     if is_periodic and _cfg()["muteAnnouncements"]:
+        return
+    if is_periodic and isSilentForLock():
         return
 
     is_chime_only = override_chime_only if override_chime_only is not None else _cfg().get("chimeOnlyMode", False)
@@ -256,20 +469,26 @@ def announceTime(override_bell=None, override_24=None, override_greetings=None, 
     is_clock_pulse_on = _cfg().get("clockPulseEnabled", False)
     is_timer_running = _countdownActive and _cfg().get("timerContinuousTick", True)
 
-    should_play_bell = not is_periodic and not (is_clock_pulse_on or is_timer_running)
-    if should_play_bell or is_periodic:
+    # The bell is muted whenever the ambient clock or a ticking countdown timer
+    # is running. This now applies to periodic announcements as well as manual ones.
+    is_ambient_active = is_clock_pulse_on or is_timer_running
+    should_play_bell = not is_ambient_active
+    if should_play_bell:
         playActiveBell(override_bell)
-    else:
+    elif not is_periodic:
         playTick()
 
-    delay = BELL_DELAY_MS if (should_play_bell or is_periodic) else 0
+    delay = BELL_DELAY_MS if should_play_bell else 0
 
     def doSpeech():
         text = buildTimeSentence(
             override_24=override_24,
             override_greetings=override_greetings,
             override_inc_date=override_inc_date,
-            override_battery=override_battery
+            override_battery=override_battery,
+            override_battery_manual=override_battery_manual,
+            battery_test=is_test,
+            is_periodic=is_periodic
         )
         if is_periodic and _cfg()["healthReminders"]:
             hType = _cfg()["healthReminderType"]
@@ -345,6 +564,7 @@ def startCountdown(seconds):
         return
     _timerRemainingSecs = seconds
     _countdownActive = True
+    syncClockPulse()
     if not _countdownTimerObj:
         _countdownTimerObj = wx.Timer()
         _countdownTimerObj.Bind(wx.EVT_TIMER, _onCountdownTick)
@@ -370,14 +590,17 @@ def _onCountdownTick(event):
             playTick()
     elif _timerRemainingSecs <= 0:
         _countdownActive = False
+        syncClockPulse()
         _countdownTimerObj.Stop()
         playActiveBell(DEFAULT_BELL)
-        wx.CallLater(600, lambda: ui.message("Time is up! Your countdown timer has finished."))
+        if not isSilentForLock():
+            wx.CallLater(600, lambda: ui.message("Time is up! Your countdown timer has finished."))
 
 def stopCountdown():
     global _countdownActive, _countdownTimerObj, _timerRemainingSecs
     if _countdownActive:
         _countdownActive = False
+        syncClockPulse()
         if _countdownTimerObj:
             _countdownTimerObj.Stop()
         _timerRemainingSecs = 0
@@ -385,7 +608,34 @@ def stopCountdown():
     else:
         ui.message("No active timer running.")
 
-def startPomodoroWithCustom(f_h, f_m, b_h, b_m):
+def _pomodoroBellAllowed():
+    # While the ambient clock is on, focus session alerts are speech only (no bell).
+    return not _cfg().get("clockPulseEnabled", False)
+
+def _speakAfterBell(bell_played, delay_ms, text):
+    if isSilentForLock():
+        return
+    if bell_played:
+        wx.CallLater(delay_ms, lambda: ui.message(text))
+    else:
+        ui.message(text)
+
+def _durationText(h, m, sec, default_text):
+    parts = []
+    if h: parts.append(f"{h} {'hour' if h == 1 else 'hours'}")
+    if m: parts.append(f"{m} {'minute' if m == 1 else 'minutes'}")
+    if sec: parts.append(f"{sec} {'second' if sec == 1 else 'seconds'}")
+    return " ".join(parts) if parts else default_text
+
+def _focusTotalSecs(cfg):
+    total = cfg.get("focusHours", 0) * 3600 + cfg.get("focusMinutes", 25) * 60 + cfg.get("focusSeconds", 0)
+    return total if total > 0 else 25 * 60
+
+def _breakTotalSecs(cfg):
+    total = cfg.get("breakHours", 0) * 3600 + cfg.get("breakMinutes", 5) * 60 + cfg.get("breakSeconds", 0)
+    return total if total > 0 else 5 * 60
+
+def startPomodoroWithCustom(f_h, f_m, f_s, b_h, b_m, b_s):
     global _pomodoroActive, _pomodoroIsBreak, _pomodoroRemainingSecs, _pomodoroTimerObj, _countdownActive
     if _countdownActive:
         ui.message("Countdown timer is currently active. Please stop the timer before starting focus.")
@@ -393,28 +643,25 @@ def startPomodoroWithCustom(f_h, f_m, b_h, b_m):
     cfg = _cfg()
     cfg["focusHours"] = f_h
     cfg["focusMinutes"] = f_m
+    cfg["focusSeconds"] = f_s
     cfg["breakHours"] = b_h
     cfg["breakMinutes"] = b_m
-
-    tot_focus_sec = (f_h * 3600) + (f_m * 60)
-    if tot_focus_sec <= 0:
-        tot_focus_sec = 25 * 60
+    cfg["breakSeconds"] = b_s
 
     _pomodoroActive = True
     _pomodoroIsBreak = False
-    _pomodoroRemainingSecs = tot_focus_sec
+    _pomodoroRemainingSecs = _focusTotalSecs(cfg)
 
     if not _pomodoroTimerObj:
         _pomodoroTimerObj = wx.Timer()
         _pomodoroTimerObj.Bind(wx.EVT_TIMER, _onPomodoroTick)
     _pomodoroTimerObj.Start(1000)
-    playActiveBell()
+    bell_on = _pomodoroBellAllowed()
+    if bell_on:
+        playActiveBell()
 
-    f_parts = []
-    if f_h: f_parts.append(f"{f_h} hours")
-    if f_m: f_parts.append(f"{f_m} minutes")
-    f_text = " ".join(f_parts) if f_parts else "25 minutes"
-    wx.CallLater(350, lambda: ui.message(f"Pomodoro focus session started for {f_text}."))
+    f_text = _durationText(f_h, f_m, f_s, "25 minutes")
+    _speakAfterBell(bell_on, 350, f"Pomodoro focus session started for {f_text}.")
 
 def stopPomodoroSession():
     global _pomodoroActive, _pomodoroTimerObj
@@ -447,8 +694,10 @@ def togglePomodoro():
         startPomodoroWithCustom(
             cfg.get("focusHours", 0),
             cfg.get("focusMinutes", 25),
+            cfg.get("focusSeconds", 0),
             cfg.get("breakHours", 0),
-            cfg.get("breakMinutes", 5)
+            cfg.get("breakMinutes", 5),
+            cfg.get("breakSeconds", 0)
         )
 
 def _onPomodoroTick(event):
@@ -457,38 +706,45 @@ def _onPomodoroTick(event):
         return
     _pomodoroRemainingSecs -= 1
     if _pomodoroRemainingSecs <= 0:
-        playActiveBell()
+        bell_on = _pomodoroBellAllowed()
+        if bell_on:
+            playActiveBell()
         cfg = _cfg()
         if not _pomodoroIsBreak:
             _pomodoroIsBreak = True
-            tot_break_sec = (cfg.get("breakHours", 0) * 3600) + (cfg.get("breakMinutes", 5) * 60)
-            _pomodoroRemainingSecs = tot_break_sec if tot_break_sec > 0 else 300
-            b_parts = []
-            if cfg.get("breakHours", 0): b_parts.append(f"{cfg['breakHours']} hours")
-            if cfg.get("breakMinutes", 5): b_parts.append(f"{cfg['breakMinutes']} minutes")
-            b_text = " ".join(b_parts) if b_parts else "5 minutes"
-            wx.CallLater(600, lambda: ui.message(f"Focus complete! Take a {b_text} break."))
+            _pomodoroRemainingSecs = _breakTotalSecs(cfg)
+            b_text = _durationText(cfg.get("breakHours", 0), cfg.get("breakMinutes", 5), cfg.get("breakSeconds", 0), "5 minutes")
+            _speakAfterBell(bell_on, 600, f"Focus complete! Take a break for {b_text}.")
         else:
             _pomodoroIsBreak = False
-            tot_focus_sec = (cfg.get("focusHours", 0) * 3600) + (cfg.get("focusMinutes", 25) * 60)
-            _pomodoroRemainingSecs = tot_focus_sec if tot_focus_sec > 0 else 1500
-            wx.CallLater(600, lambda: ui.message("Break finished! Ready for next focus session."))
+            _pomodoroRemainingSecs = _focusTotalSecs(cfg)
+            _speakAfterBell(bell_on, 600, "Break finished! Ready for next focus session.")
 
-def setupInvertedSpinCtrl(spin_ctrl, label_name):
+def setupSpinCtrl(spin_ctrl, label_name):
+    """Name a number box and apply the arrow key direction chosen in Advanced settings.
+
+    Default (standard): Up arrow increases the value, Down arrow decreases it.
+    When "Reverse arrow keys in number boxes" is ticked: Down increases, Up decreases.
+    """
     spin_ctrl.SetName(label_name)
+
     def onSpinKey(event):
+        try:
+            reverse = bool(_cfg()["invertSpinKeys"])
+        except Exception:
+            reverse = False
+        if not reverse:
+            event.Skip()
+            return
         key = event.GetKeyCode()
         val = spin_ctrl.GetValue()
-        s_min = spin_ctrl.GetMin()
-        s_max = spin_ctrl.GetMax()
-
         if key == wx.WXK_DOWN:
-            if val < s_max:
+            if val < spin_ctrl.GetMax():
                 spin_ctrl.SetValue(val + 1)
             ui.message(str(spin_ctrl.GetValue()))
             return
         elif key == wx.WXK_UP:
-            if val > s_min:
+            if val > spin_ctrl.GetMin():
                 spin_ctrl.SetValue(val - 1)
             ui.message(str(spin_ctrl.GetValue()))
             return
@@ -506,19 +762,19 @@ class PrecisionCountdownDialog(wx.Dialog):
         lblH = wx.StaticText(self, label="Timer Hours:")
         grid.Add(lblH, flag=wx.ALIGN_CENTER_VERTICAL)
         self.hSpin = wx.SpinCtrl(self, min=0, max=23, initial=0)
-        setupInvertedSpinCtrl(self.hSpin, "Timer Hours")
+        setupSpinCtrl(self.hSpin, "Timer Hours")
         grid.Add(self.hSpin, 0)
 
         lblM = wx.StaticText(self, label="Timer Minutes:")
         grid.Add(lblM, flag=wx.ALIGN_CENTER_VERTICAL)
         self.mSpin = wx.SpinCtrl(self, min=0, max=59, initial=5)
-        setupInvertedSpinCtrl(self.mSpin, "Timer Minutes")
+        setupSpinCtrl(self.mSpin, "Timer Minutes")
         grid.Add(self.mSpin, 0)
 
         lblS = wx.StaticText(self, label="Timer Seconds:")
         grid.Add(lblS, flag=wx.ALIGN_CENTER_VERTICAL)
         self.sSpin = wx.SpinCtrl(self, min=0, max=59, initial=0)
-        setupInvertedSpinCtrl(self.sSpin, "Timer Seconds")
+        setupSpinCtrl(self.sSpin, "Timer Seconds")
         grid.Add(self.sSpin, 0)
         sizer.Add(grid, flag=wx.ALL | wx.EXPAND, border=12)
 
@@ -684,9 +940,13 @@ class SettingsDialog(wx.Dialog):
         self.includeDateCheck.SetValue(cfg["includeDateInPeriodic"])
         sizer.Add(self.includeDateCheck, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
 
-        self.includeBatteryCheck = wx.CheckBox(panel, label="&Append laptop battery status and critical warning")
+        self.includeBatteryCheck = wx.CheckBox(panel, label="&Warn about a critical battery in periodic announcements (20 percent or lower and not charging)")
         self.includeBatteryCheck.SetValue(cfg["includeBatteryStatus"])
         sizer.Add(self.includeBatteryCheck, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
+
+        self.batteryManualCheck = wx.CheckBox(panel, label="Also announce the battery status when the time &shortcut is pressed manually")
+        self.batteryManualCheck.SetValue(cfg["batteryOnManualPress"])
+        sizer.Add(self.batteryManualCheck, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=8)
 
         self.chimeOnlyCheck = wx.CheckBox(
             panel,
@@ -713,6 +973,7 @@ class SettingsDialog(wx.Dialog):
         use_greetings = self.greetingsCheck.GetValue()
         inc_date = self.includeDateCheck.GetValue()
         inc_battery = self.includeBatteryCheck.GetValue()
+        inc_battery_manual = self.batteryManualCheck.GetValue()
         is_chime = self.chimeOnlyCheck.GetValue()
 
         if is_chime:
@@ -725,8 +986,10 @@ class SettingsDialog(wx.Dialog):
                 override_greetings=use_greetings,
                 override_inc_date=inc_date,
                 override_battery=inc_battery,
+                override_battery_manual=inc_battery_manual,
                 override_chime_only=False,
-                is_periodic=False
+                is_periodic=False,
+                is_test=True
             )
 
     def _buildScheduleTab(self, cfg):
@@ -843,19 +1106,19 @@ class SettingsDialog(wx.Dialog):
         lblTH = wx.StaticText(panel, label="Timer Hours:")
         tRow.Add(lblTH, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=4)
         self.tabHSpin = wx.SpinCtrl(panel, min=0, max=23, initial=0, size=(65, -1))
-        setupInvertedSpinCtrl(self.tabHSpin, "Timer Hours")
+        setupSpinCtrl(self.tabHSpin, "Timer Hours")
         tRow.Add(self.tabHSpin, 0, wx.RIGHT, 10)
 
         lblTM = wx.StaticText(panel, label="Timer Minutes:")
         tRow.Add(lblTM, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=4)
         self.tabMSpin = wx.SpinCtrl(panel, min=0, max=59, initial=5, size=(55, -1))
-        setupInvertedSpinCtrl(self.tabMSpin, "Timer Minutes")
+        setupSpinCtrl(self.tabMSpin, "Timer Minutes")
         tRow.Add(self.tabMSpin, 0, wx.RIGHT, 10)
 
         lblTS = wx.StaticText(panel, label="Timer Seconds:")
         tRow.Add(lblTS, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=4)
         self.tabSSpin = wx.SpinCtrl(panel, min=0, max=59, initial=0, size=(55, -1))
-        setupInvertedSpinCtrl(self.tabSSpin, "Timer Seconds")
+        setupSpinCtrl(self.tabSSpin, "Timer Seconds")
         tRow.Add(self.tabSSpin, 0, wx.RIGHT, 12)
 
         self.btnStartTimer = wx.Button(panel, label="&Start Timer (Alt+S)")
@@ -873,30 +1136,42 @@ class SettingsDialog(wx.Dialog):
         self.timerTickCheck.SetValue(cfg.get("timerContinuousTick", True))
         sizer.Add(self.timerTickCheck, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
 
-        pGrid = wx.FlexGridSizer(2, 4, 8, 8)
+        pGrid = wx.FlexGridSizer(2, 6, 8, 8)
         lblFH = wx.StaticText(panel, label="Focus Duration Hours:")
         pGrid.Add(lblFH, flag=wx.ALIGN_CENTER_VERTICAL)
         self.focusHSpin = wx.SpinCtrl(panel, min=0, max=999, initial=cfg.get("focusHours", 0), size=(65, -1))
-        setupInvertedSpinCtrl(self.focusHSpin, "Focus Duration Hours")
+        setupSpinCtrl(self.focusHSpin, "Focus Duration Hours")
         pGrid.Add(self.focusHSpin, 0)
 
         lblFM = wx.StaticText(panel, label="Focus Duration Minutes:")
         pGrid.Add(lblFM, flag=wx.ALIGN_CENTER_VERTICAL)
-        self.focusMSpin = wx.SpinCtrl(panel, min=1, max=59, initial=cfg.get("focusMinutes", 25), size=(55, -1))
-        setupInvertedSpinCtrl(self.focusMSpin, "Focus Duration Minutes")
+        self.focusMSpin = wx.SpinCtrl(panel, min=0, max=59, initial=cfg.get("focusMinutes", 25), size=(55, -1))
+        setupSpinCtrl(self.focusMSpin, "Focus Duration Minutes")
         pGrid.Add(self.focusMSpin, 0)
+
+        lblFS = wx.StaticText(panel, label="Focus Duration Seconds:")
+        pGrid.Add(lblFS, flag=wx.ALIGN_CENTER_VERTICAL)
+        self.focusSSpin = wx.SpinCtrl(panel, min=0, max=59, initial=cfg.get("focusSeconds", 0), size=(55, -1))
+        setupSpinCtrl(self.focusSSpin, "Focus Duration Seconds")
+        pGrid.Add(self.focusSSpin, 0)
 
         lblBH = wx.StaticText(panel, label="Break Duration Hours:")
         pGrid.Add(lblBH, flag=wx.ALIGN_CENTER_VERTICAL)
         self.breakHSpin = wx.SpinCtrl(panel, min=0, max=999, initial=cfg.get("breakHours", 0), size=(65, -1))
-        setupInvertedSpinCtrl(self.breakHSpin, "Break Duration Hours")
+        setupSpinCtrl(self.breakHSpin, "Break Duration Hours")
         pGrid.Add(self.breakHSpin, 0)
 
         lblBM = wx.StaticText(panel, label="Break Duration Minutes:")
         pGrid.Add(lblBM, flag=wx.ALIGN_CENTER_VERTICAL)
-        self.breakMSpin = wx.SpinCtrl(panel, min=1, max=59, initial=cfg.get("breakMinutes", 5), size=(55, -1))
-        setupInvertedSpinCtrl(self.breakMSpin, "Break Duration Minutes")
+        self.breakMSpin = wx.SpinCtrl(panel, min=0, max=59, initial=cfg.get("breakMinutes", 5), size=(55, -1))
+        setupSpinCtrl(self.breakMSpin, "Break Duration Minutes")
         pGrid.Add(self.breakMSpin, 0)
+
+        lblBS = wx.StaticText(panel, label="Break Duration Seconds:")
+        pGrid.Add(lblBS, flag=wx.ALIGN_CENTER_VERTICAL)
+        self.breakSSpin = wx.SpinCtrl(panel, min=0, max=59, initial=cfg.get("breakSeconds", 0), size=(55, -1))
+        setupSpinCtrl(self.breakSSpin, "Break Duration Seconds")
+        pGrid.Add(self.breakSSpin, 0)
         sizer.Add(pGrid, flag=wx.ALL, border=10)
 
         pBtnRow = wx.BoxSizer(wx.HORIZONTAL)
@@ -917,6 +1192,7 @@ class SettingsDialog(wx.Dialog):
 
         self.pulseCheck = wx.CheckBox(panel, label="&Enable ambient mechanical clock seconds tick pulse")
         self.pulseCheck.SetValue(cfg["clockPulseEnabled"])
+        self.pulseCheck.Bind(wx.EVT_CHECKBOX, self.onPulseCheckToggled)
         sizer.Add(self.pulseCheck, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
         pulseGrid = wx.BoxSizer(wx.HORIZONTAL)
@@ -929,6 +1205,18 @@ class SettingsDialog(wx.Dialog):
         self.pulseChoice.SetSelection(pIdx)
         pulseGrid.Add(self.pulseChoice, 1, flag=wx.EXPAND)
         sizer.Add(pulseGrid, flag=wx.ALL | wx.EXPAND, border=10)
+
+        tickRow = wx.BoxSizer(wx.HORIZONTAL)
+        lblTickSound = wx.StaticText(panel, label="Tick Sound:")
+        tickRow.Add(lblTickSound, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=6)
+        self.tickSoundChoice = wx.Choice(panel, choices=[name for _k, name, _f in TICK_SOUNDS])
+        self.tickSoundChoice.SetName("Tick Sound")
+        tickKeys = [k for k, _n, _f in TICK_SOUNDS]
+        try: tIdx = tickKeys.index(cfg.get("tickSound", "standard"))
+        except ValueError: tIdx = 0
+        self.tickSoundChoice.SetSelection(tIdx)
+        tickRow.Add(self.tickSoundChoice, 1, flag=wx.EXPAND)
+        sizer.Add(tickRow, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, border=10)
 
         packRow = wx.BoxSizer(wx.HORIZONTAL)
         lblChime = wx.StaticText(panel, label="Chime Sound Theme:")
@@ -967,6 +1255,14 @@ class SettingsDialog(wx.Dialog):
         cSizer.Add(self.btnReset, 0, wx.ALIGN_CENTER_VERTICAL)
         sizer.Add(cSizer, flag=wx.ALL | wx.EXPAND, border=10)
 
+        self.lockedCheck = wx.CheckBox(panel, label="Announce and play sounds while &Windows is locked (off by default, so the lock screen stays quiet)")
+        self.lockedCheck.SetValue(cfg["announceWhenLocked"])
+        sizer.Add(self.lockedCheck, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
+        self.invertSpinCheck = wx.CheckBox(panel, label="Re&verse arrow keys in all number boxes (Down arrow increases, Up arrow decreases)")
+        self.invertSpinCheck.SetValue(cfg["invertSpinKeys"])
+        sizer.Add(self.invertSpinCheck, flag=wx.LEFT | wx.RIGHT | wx.BOTTOM, border=10)
+
         panel.SetSizer(sizer)
         self.notebook.AddPage(panel, "Advanced")
 
@@ -980,9 +1276,17 @@ class SettingsDialog(wx.Dialog):
     def onStartTabFocus(self, event):
         f_h = self.focusHSpin.GetValue()
         f_m = self.focusMSpin.GetValue()
+        f_s = self.focusSSpin.GetValue()
         b_h = self.breakHSpin.GetValue()
         b_m = self.breakMSpin.GetValue()
-        startPomodoroWithCustom(f_h, f_m, b_h, b_m)
+        b_s = self.breakSSpin.GetValue()
+        if (f_h * 3600 + f_m * 60 + f_s) <= 0:
+            ui.message("Please enter a focus duration greater than zero.")
+            return
+        if (b_h * 3600 + b_m * 60 + b_s) <= 0:
+            ui.message("Please enter a break duration greater than zero.")
+            return
+        startPomodoroWithCustom(f_h, f_m, f_s, b_h, b_m, b_s)
 
     def onTestCurrentChime(self, event):
         is_pulse_on = _cfg().get("clockPulseEnabled", False)
@@ -1009,6 +1313,13 @@ class SettingsDialog(wx.Dialog):
         playActiveBell(os.path.join(SOUND_DIR, fname))
         ui.message("Custom chime removed. Restored earcon pack.")
 
+    def onPulseCheckToggled(self, event):
+        if self.pulseCheck.GetValue() and not _cfg()["clockPulseEnabled"] and _timerBlocksClockPulse():
+            self.pulseCheck.SetValue(False)
+            gui.messageBox(CLOCK_BLOCKED_MESSAGE, "Time and Focus Announcer", wx.OK | wx.ICON_WARNING, self)
+            self.pulseCheck.SetFocus()
+        event.Skip()
+
     def onOK(self, event):
         cfg = _cfg()
         cfg["intervalMinutes"] = INTERVAL_CHOICES[self.intervalChoice.GetSelection()]
@@ -1016,6 +1327,7 @@ class SettingsDialog(wx.Dialog):
         cfg["enableGreetings"] = self.greetingsCheck.GetValue()
         cfg["includeDateInPeriodic"] = self.includeDateCheck.GetValue()
         cfg["includeBatteryStatus"] = self.includeBatteryCheck.GetValue()
+        cfg["batteryOnManualPress"] = self.batteryManualCheck.GetValue()
         cfg["chimeOnlyMode"] = self.chimeOnlyCheck.GetValue()
         cfg["suppressOnFullscreen"] = self.fullscreenCheck.GetValue()
         cfg["scheduleEnabled"] = self.scheduleCheck.GetValue()
@@ -1029,14 +1341,22 @@ class SettingsDialog(wx.Dialog):
         cfg["endMinute"] = e_m_idx if e_m_idx != wx.NOT_FOUND else 0
         cfg["focusHours"] = self.focusHSpin.GetValue()
         cfg["focusMinutes"] = self.focusMSpin.GetValue()
+        cfg["focusSeconds"] = self.focusSSpin.GetValue()
         cfg["breakHours"] = self.breakHSpin.GetValue()
         cfg["breakMinutes"] = self.breakMSpin.GetValue()
+        cfg["breakSeconds"] = self.breakSSpin.GetValue()
         cfg["timerContinuousTick"] = self.timerTickCheck.GetValue()
         cfg["soundPack"] = SOUNDPACKS[self.packChoice.GetSelection()][0]
         cfg["customBellPath"] = self.customPath.GetValue().strip()
         cfg["healthReminders"] = self.healthCheck.GetValue()
-        cfg["clockPulseEnabled"] = self.pulseCheck.GetValue()
+        wantPulse = self.pulseCheck.GetValue()
+        if wantPulse and not cfg["clockPulseEnabled"] and _timerBlocksClockPulse():
+            wantPulse = False  # a timer with continuous ticking is running
+        cfg["clockPulseEnabled"] = wantPulse
         cfg["clockPulseIntervalSecs"] = PULSE_INTERVALS[self.pulseChoice.GetSelection()]
+        cfg["tickSound"] = TICK_SOUNDS[self.tickSoundChoice.GetSelection()][0]
+        cfg["invertSpinKeys"] = self.invertSpinCheck.GetValue()
+        cfg["announceWhenLocked"] = self.lockedCheck.GetValue()
         syncClockPulse()
         SettingsDialog._instance = None
         self.Destroy()
@@ -1084,15 +1404,16 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
     def _onTimerTick(self, event):
         try:
-            interval = _cfg()["intervalMinutes"]
+            cfg = _cfg()
+            interval = cfg["intervalMinutes"]
             if interval <= 0: return
             now = datetime.datetime.now()
             if now.minute % interval != 0 or now.second >= 20: return
-            if not isWithinSchedule(now): return
-            if _cfg()["suppressOnFullscreen"] and isForegroundFullscreen(): return
             key = now.strftime("%Y%m%d%H%M")
             if key == self._lastAnnouncedKey: return
             self._lastAnnouncedKey = key
+            if not isWithinSchedule(now): return
+            if cfg["suppressOnFullscreen"] and isForegroundFullscreen(): return
             announceTime(is_periodic=True)
         except Exception:
             pass
@@ -1136,10 +1457,23 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
     @script(description="Toggle ambient mechanical clock pulse rhythm", gesture="kb:NVDA+control+shift+k")
     def script_clockPulseToggle(self, gesture):
         cfg = _cfg()
+        if not cfg["clockPulseEnabled"] and _timerBlocksClockPulse():
+            ui.message(CLOCK_BLOCKED_MESSAGE)
+            return
         cfg["clockPulseEnabled"] = not cfg["clockPulseEnabled"]
         syncClockPulse()
         st = "enabled" if cfg["clockPulseEnabled"] else "disabled"
         ui.message(f"Ambient clock pulse {st}")
+
+    @script(description="Switch between the standard tick and the loud tick", gesture="kb:NVDA+control+shift+j")
+    def script_cycleTickSound(self, gesture):
+        cfg = _cfg()
+        keys = [k for k, _n, _f in TICK_SOUNDS]
+        cur = cfg.get("tickSound", "standard")
+        idx = (keys.index(cur) + 1) % len(keys) if cur in keys else 0
+        cfg["tickSound"] = keys[idx]
+        ui.message(f"Tick sound: {TICK_SOUNDS[idx][1]}")
+        playTick()
 
     @script(description="Quick-cycle audio earcon soundpacks", gesture="kb:NVDA+control+shift+b")
     def script_cycleEarcons(self, gesture):

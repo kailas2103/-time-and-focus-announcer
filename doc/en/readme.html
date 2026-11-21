@@ -126,8 +126,9 @@
 	<p class="tagline">An all-in-one accessible audio timepiece and productivity suite for NVDA.</p>
 	<p class="meta">
 		<span><strong>Author:</strong> Kailas Eknath Bhoye</span>
-		<span><strong>Version:</strong> 1.0</span>
+		<span><strong>Version:</strong> 1.1</span>
 		<span><strong>License:</strong> MIT</span>
+		<span><strong>Requires:</strong> NVDA 2026.1 or later</span>
 	</p>
 </header>
 
@@ -156,11 +157,11 @@
 		</div>
 		<div>
 			<strong>Pomodoro Focus Engine</strong>
-			A complete focus/break session cycle with configurable durations (up to 999 hours each for focus and break) and spoken transitions.
+			A complete focus/break session cycle with configurable durations in hours, minutes and seconds (up to 999 hours each for focus and break) and spoken transitions.
 		</div>
 		<div>
 			<strong>Ambient Clock Pulse</strong>
-			An optional, unobtrusive tick - continuous or at a 3-second interval - for a steady sense of time passing.
+			An optional, unobtrusive tick for a steady sense of time passing. Choose how often it ticks: every 1 second (continuous), every 3 seconds, every 5 seconds, every 10 seconds, or every 60 seconds (a minute pulse). Two tick sounds are available, a standard tick and a louder tick, and a shortcut switches between them.
 		</div>
 		<div>
 			<strong>Scheduled Announcements</strong>
@@ -179,6 +180,15 @@
 			Gentle, optional hourly nudges to stay hydrated and mind your posture.
 		</div>
 	</div>
+</section>
+
+<section>
+	<h2>Installation</h2>
+	<ol>
+		<li>Download the add-on file from the Blind Help Project download page: https://blindhelp.net/software/Time-Focus-Announcer</li>
+		<li>Open the downloaded file. NVDA asks if you want to install it. Choose Yes.</li>
+		<li>Restart NVDA when it asks you to.</li>
+	</ol>
 </section>
 
 <section>
@@ -210,6 +220,10 @@
 			<td>Turn the ambient mechanical clock pulse on or off.</td>
 		</tr>
 		<tr>
+			<td><kbd>NVDA+Control+Shift+J</kbd></td>
+			<td>Switch between the standard tick and the loud tick.</td>
+		</tr>
+		<tr>
 			<td><kbd>NVDA+Control+Shift+B</kbd></td>
 			<td>Quick-cycle through the available audio earcon soundpacks.</td>
 		</tr>
@@ -232,6 +246,21 @@
 		each preceded by a clear description of what that section controls, so every option
 		is easy to find and understand with a screen reader.
 	</p>
+</section>
+
+<section>
+	<h2>What's New in Version 1.1</h2>
+	<ul>
+		<li><strong>Quiet bell during ambient clock or timer:</strong> when the ambient clock pulse or a continuously ticking countdown timer is running, periodic announcements no longer play the bell chime. The time is still spoken. This now matches how the manual time shortcut already behaved.</li>
+		<li><strong>Quiet Pomodoro alerts with the ambient clock:</strong> while the ambient clock is on, Pomodoro focus and break alerts are spoken only, without the bell.</li>
+		<li><strong>Seconds for Pomodoro focus and break:</strong> the focus and break durations now have a seconds box next to hours and minutes. The minutes boxes can also be set to 0, so a duration such as 30 seconds is possible. If a focus or break duration is left at zero, the default of 25 minutes for focus and 5 minutes for break is used.</li>
+		<li><strong>Silent on the Windows lock screen:</strong> by default the add-on does not play sounds or announcements while Windows is locked. It checks Windows' own lock state, the lock screen picture and the sign-in screen in several ways, so it stays quiet on all of them, on laptops with the lid open and on desktop PCs, including PCs without a password. If you want them on the lock screen, tick the Announce and play sounds while Windows is locked checkbox in the Advanced tab.</li>
+		<li><strong>Battery warnings only when it matters:</strong> with the battery option ticked, periodic announcements now mention the battery only when it is critical (20 percent or lower and not charging). A normal battery state is no longer spoken during periodic announcements. A separate checkbox, Also announce the battery status when the time shortcut is pressed manually, adds the current battery status when you press the time shortcut yourself. It is off by default. In settings, the Test button speaks the battery state straight away, and says so on a computer without a battery.</li>
+		<li><strong>New ambient clock frequency:</strong> the ambient clock can now tick every 3 seconds, in addition to every 1, 5, 10 and 60 seconds.</li>
+		<li><strong>Loud tick sound:</strong> a new, louder tick sound is available for the ambient clock and the countdown timer. Choose it with the Tick Sound list in the Advanced tab, or switch between the standard tick and the loud tick at any time with a new shortcut.</li>
+		<li><strong>Number box arrow keys:</strong> number boxes use the standard arrow keys by default (Up increases, Down decreases). In the Advanced tab, the Reverse arrow keys in all number boxes checkbox switches this around, so Down increases and Up decreases. It applies to every number box in the add-on.</li>
+		<li><strong>Documentation fix:</strong> the countdown timer supports up to 24 hours (23:59:59). Pomodoro focus and break durations support up to 999 hours each.</li>
+	</ul>
 </section>
 
 <footer>
